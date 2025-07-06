@@ -1,0 +1,374 @@
+# Check for administrator privileges
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole] "Administrator")) {
+    Write-Error "Please run this script as an administrator."
+    exit
+}
+
+# Import Defender module
+Import-Module Defender -ErrorAction SilentlyContinue
+
+# Initialize start time
+$startTime = Get-Date
+
+# --- Threats command: retrieve active threats not quarantined
+try {
+    $threats = Get-MpThreatDetection
+} catch {
+    Write-Error "Failed to retrieve threat information. Ensure Windows Defender is enabled and the PowerShell module is available."
+    exit
+}
+
+$activeNotQuarantinedThreats = $threats | Where-Object {
+    $_.ThreatStatus -eq "Active" -and $_.QuarantineStatus -ne "Quarantined"
+}
+
+if ($activeNotQuarantinedThreats) {
+    $activeNotQuarantinedThreats | ForEach-Object {
+        Write-Output "Threat Name: $($_.ThreatName)"
+        Write-Output "Severity: $($_.Severity)"
+        Write-Output "Path: $($_.Path)"
+        Write-Output "Detection Time: $($_.DetectionTime)"
+        Write-Output "----------------------------------------"
+    }
+} else {
+    Write-Output "No active threats that are not quarantined."
+}
+
+# ASCII Art Banner
+Write-Host " (        )          (                  )   (    (     (        )           (        )   (     (               )  " -ForegroundColor White
+Write-Host " )\ )  ( /(    (     )\ )        (   ( /(   )\ ) )\ )  )\ )  ( /(  (        )\ )  ( /(   )\ )  )\ )   (     ( /(  " -ForegroundColor White
+Write-Host "(()/(  )##))   )\   (()/( (      )\  )##)) (()/((()/( (()/(  )##)) )\ )    (()/(  )##)) (()/( (()/(   )\    )##)) " -ForegroundColor White
+Write-Host " /(_))((_)\  (((_)   /(_)))\   (((_)((_)\   /(_))/(_)) /(_))((_)\ (()/(     /(_))((_)\   /(_)) /(_))(((_)  ((_)\  " -ForegroundColor White
+Write-Host "(_))    ((_) )\___  (_)) ((_)  )\___  ((_) (_)) (_)) _(_))   _((_) /(_))_  (_))    ((_) (_))  (_))  )\___ __ ((_) " -ForegroundColor White
+Write-Host "| |    / _ ##(/ __| | _ \| __|((/ __|/ _ \ | _ \ |   \|_ _| | \| |(_)) __|  | _ \  / _ \ | |   |_ _|((/ __|\ \ / / " -ForegroundColor White
+Write-Host "| |__ | (_) || (__  |   /| _|  | (__| (_) ||   / | |) || |  | .  |  | (_    |  _/ | (_) || |__  | |  | (__  \ V /  " -ForegroundColor White
+Write-Host "|____| \___/  \___| |_|_\|___|  \___|\___/ |_|_\ |___/|___| |_|\_|   \___|  |_|    \___/ |____||___|  \___|  |_|   " -ForegroundColor White
+Write-Host ""
+Write-Host "  Made by JustValkz | Inspired by cyberthreats " -ForegroundColor Blue -NoNewline
+Write-Host " - LOC PowerShell T2+" -ForegroundColor White
+Write-Host ""
+
+# Progress Bar
+for ($i = 0; $i -le 10; $i++) {
+    $percent = $i * 10
+    $bar = "#" * $i + "-" * (10 - $i)
+    Write-Host "`r[ $bar ] $percent%" -NoNewline
+    Start-Sleep -Milliseconds 300
+}
+Write-Host ""
+
+# Initialize output arrays
+$exclusionsOutput = @()
+$threatsOutput = @()
+$windowsOutput = @()
+$memoryIntegrityOutput = @()
+$defenderOutput = @()
+$drivesOutput = @()
+$exploitOutput = @()
+$prefetchOutput = @()
+$keyAuthOutput = @()
+$protectionHistoryOutput = @()
+$pahOutput = @()
+$bamOutput = @()
+
+# --- Add Protection History Check ---
+Write-Host "Completed" -ForegroundColor Cyan
+try {
+    $since = (Get-Date).AddHours(-24)
+    $historyPath = "$env:ProgramData\Microsoft\Windows Defender\Scans\History\Service\DetectionHistory"
+
+    if (-Not (Test-Path $historyPath)) {
+        $protectionHistoryOutput += "❌ Detection history folder not found: $historyPath"
+    } else {
+        $events = Get-ChildItem -Path $historyPath -Recurse -Filter "*.json" -ErrorAction SilentlyContinue
+        $protectionHistoryOutput += "Found $($events.Count) detection file(s)."
+
+        foreach ($event in $events) {
+            try {
+                $json = Get-Content $event.FullName -Raw | ConvertFrom-Json
+                $timestamp = Get-Date $json.TimeStamp
+
+                if ($timestamp -ge $since) {
+                    $protectionHistoryOutput += "----------------------------"
+                    $protectionHistoryOutput += "Threat Name: $($json.Threat.Name)"
+                    $protectionHistoryOutput += "Detected On: $timestamp"
+
+                    if ($json.Resources) {
+                        foreach ($resource in $json.Resources) {
+                            $protectionHistoryOutput += "File Path: $($resource.Path)"
+                        }
+                    } else {
+                        $protectionHistoryOutput += "⚠️ No file path listed."
+                    }
+                }
+            } catch {
+                $protectionHistoryOutput += "❌ Failed to parse $($event.FullName): $_"
+            }
+        }
+    }
+} catch {
+    $protectionHistoryOutput += "Error during Protection History check: $_"
+}
+
+# --- Check for exclusion paths
+try {
+    $exclusions = Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+    $exclusionsOutput += if ($exclusions) {
+        "FAILURE: Exclusion paths detected:`n$($exclusions -join "`n")"
+    } else {
+        "SUCCESS: No Exclusions were found at the moment."
+    }
+} catch {
+    $exclusionsOutput += "WARNING: Could not get exclusion paths. MUST RUN AS ADMINISTRATOR!"
+}
+
+# --- Check for active or past threats
+try {
+    $threats = Get-MpThreat
+    if ($threats) {
+        foreach ($threat in $threats) {
+            $line = "$($threat.ThreatName) | Status: $($threat.Status) | ActionSuccess: $($threat.ActionSuccess) | Resources: $($threat.Resources)"
+            if ($threat.Status -eq "Active" -or $threat.ActionSuccess -eq $false -or $threat.Status -eq "Allowed") {
+                $threatsOutput += "FAILURE: $line"
+            } elseif ($threat.Status -eq "Quarantined" -or $threat.Status -eq "Resolved") {
+                $threatsOutput += "SUCCESS: $line"
+            } else {
+                $threatsOutput += "FAILURE: Uncertain threat status - $line"
+            }
+        }
+    } else {
+        $threatsOutput += "SUCCESS: No threats detected."
+    }
+} catch {
+    $threatsOutput += "WARNING: Could not check for threats."
+}
+
+# --- OS verification
+try {
+    if ($env:OS -eq "Windows_NT" -and (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop)) {
+        $windowsOutput += "SUCCESS: Running on real Windows."
+    } else {
+        $windowsOutput += "FAILURE: Not running on real Windows."
+    }
+} catch {
+    $windowsOutput += "FAILURE: Not running on real Windows."
+}
+
+# --- Memory integrity and Vulnerable Blocklist check
+try {
+    $regPathMI = "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"
+    $memoryIntegrityEnabled = Get-ItemPropertyValue -Path $regPathMI -Name "Enabled" -ErrorAction Stop
+
+    $regPathVB = "HKLM:\Path\To\VulnerableBlocklist"
+    $vulnerableBlocklistOn = $false
+    try {
+        $vbStatus = Get-ItemPropertyValue -Path $regPathVB -Name "VulnerableBlocklistStatus" -ErrorAction Stop
+        if ($vbStatus -eq 1) {
+            $vulnerableBlocklistOn = $true
+        }
+    } catch {
+        $vulnerableBlocklistOn = $false
+    }
+
+    if ($memoryIntegrityEnabled -eq 1 -or $vulnerableBlocklistOn) {
+        $memoryIntegrityOutput += "SUCCESS: Memory integrity check passed (either Memory Integrity is ON or Vulnerable Blocklist is ON)."
+    } else {
+        $memoryIntegrityOutput += "FAILURE: Memory integrity check failed (Memory Integrity is OFF and Vulnerable Blocklist is OFF)."
+    }
+} catch {
+    $memoryIntegrityOutput += "FAILURE: Memory integrity or Vulnerable Blocklist status could not be determined."
+}
+
+# --- Defender check
+try {
+    $defender = Get-MpComputerStatus
+    if ($defender.AMServiceEnabled) {
+        if (-not $defender.RealTimeProtectionEnabled) {
+            try {
+                Set-MpPreference -DisableRealtimeMonitoring $false
+                Start-MpWDOScan
+                $defenderOutput += "FAILURE: Realtime protection was OFF and is now being enabled through scan."
+            } catch {
+                $defenderOutput += "WARNING: Could not enable realtime protection or start scan."
+            }
+        } else {
+            $defenderOutput += "SUCCESS: Realtime protection is ENABLED."
+        }
+    } else {
+        $defenderOutput += "FAILURE: Windows Defender is NOT running or is DISABLED."
+    }
+} catch {
+    $defenderOutput += "WARNING: Could not check realtime protection status."
+}
+
+# --- Registry tracking of suspicious EXE
+try {
+    $muiPath = "HKCU:\SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"
+    $registryEntries = Get-ItemProperty -Path $muiPath -ErrorAction Stop | Select-Object -Property *
+    foreach ($prop in $registryEntries.PSObject.Properties) {
+        $propNameLower = $prop.Name.ToLower()
+        foreach ($word in $blacklist) {
+            if ($propNameLower -like "*$word*") {
+                if ($suspiciousList -contains $word) {
+                    $registryOutput += "WARNING: Detected suspicious registry key: $($prop.Name)"
+                }
+                break
+            }
+        }
+    }
+} catch {
+    $registryOutput += "WARNING: Could not access registry path for .exe tracking."
+}
+
+# --- Drive usage
+try {
+    $drives = Get-PSDrive -PSProvider FileSystem
+    foreach ($drive in $drives) {
+        $used = [math]::Round($drive.Used / 1GB, 2)
+        $total = [math]::Round(($drive.Used + $drive.Free) / 1GB, 2)
+        $drivesOutput += "Drive: $($drive.Name) | Used: $used GB / $total GB"
+    }
+} catch {
+    $drivesOutput += "WARNING: Could not enumerate drives."
+}
+
+# --- Exploit hash + folder check
+try {
+    $knownHash = "A89E3321B2BC0A90C21714F153E26DCF2BDEA4BC7200AF9C8CA8394FF54470A1"
+    $appdataFolderExists = Test-Path "$env:APPDATA\Isabelle"
+
+    if ($knownHash -eq "A89E3321B2BC0A90C21714F153E26DCF2BDEA4BC7200AF9C8CA8394FF54470A1" -and $appdataFolderExists) {
+        $exploitOutput += "FAILURE: Exploit Detected - SHA256 match and Isabelle folder found in %AppData%"
+    } else {
+        $exploitOutput += "SUCCESS: Isabelle and Evolve were not found."
+    }
+} catch {
+    $exploitOutput += "WARNING: Exploit hash check failed."
+}
+
+# --- Prefetch file scan
+try {
+    $now = Get-Date
+    $pfFiles = Get-ChildItem "C:\Windows\Prefetch" -Filter "*.pf" -ErrorAction Stop
+    foreach ($pf in $pfFiles) {
+        $name = $pf.BaseName.ToUpper()
+        $lastWrite = $pf.LastWriteTime
+        $hoursAgo = [math]::Round(($now - $lastWrite).TotalHours, 2)
+        if ($watchlist -contains "$name.EXE") {
+            $prefetchOutput += "WARNING: Suspicious prefetch file: $name | Modified: $hoursAgo hours ago"
+        } else {
+            $prefetchOutput += "Detected Prefetch File: $name | Modified: $hoursAgo hours ago"
+        }
+    }
+} catch {
+    $prefetchOutput += "WARNING: Prefetch files could not be listed or access denied."
+}
+
+# --- KeyAuth folder scan
+try {
+    $folders = Get-ChildItem "C:\ProgramData\KeyAuth\debug" -Directory -ErrorAction Stop
+    foreach ($folder in $folders) {
+        $keyAuthOutput += "FAILURE: External Cheat/Key Detected ($($folder.Name))"
+    }
+} catch {
+    $keyAuthOutput += "SUCCESS: No folders detected in Key Checker."
+}
+
+# --- Output formatting function
+function Write-Section {
+    param(
+        [string]$Title,
+        [string[]]$Lines
+    )
+    Write-Host "--- $Title ---" -ForegroundColor White
+    foreach ($line in $Lines) {
+        if ($line -match "^SUCCESS") {
+            Write-Host $line -ForegroundColor Green
+        } elseif ($line -match "^FAILURE") {
+            Write-Host $line -ForegroundColor Red
+        } elseif ($line -match "^WARNING") {
+            Write-Host $line -ForegroundColor Yellow
+        } else {
+            Write-Host $line -ForegroundColor White
+        }
+    }
+}
+
+# --- Display all sections except BAM (will be after)
+Write-Section "Exclusions" $exclusionsOutput
+Write-Section "Threats" $threatsOutput
+Write-Section "Protection History" $protectionHistoryOutput
+Write-Section "OS Check" $windowsOutput
+Write-Section "Memory Integrity" $memoryIntegrityOutput
+Write-Section "Windows Defender" $defenderOutput
+Write-Section "Drives Check" $drivesOutput
+Write-Section "Exploit Checker" $exploitOutput
+Write-Section "Prefetch" $prefetchOutput
+Write-Section "Key Checker" $keyAuthOutput
+
+
+# --- BAM Initialization ---
+Write-Section "BAM Initialization" @()
+Write-Host "NOTE: Scroll down all the way when BAM Opens." -ForegroundColor Yellow 
+try {
+    $bamScript = Invoke-WebRequest -Uri "https://raw.githubusercontent.com/2Krxzy/BAM/refs/heads/main/BAM" -UseBasicParsing
+    Invoke-Expression $bamScript.Content
+    Write-Host "SUCCESS: BAM has initiated without any errors. BAM!" -ForegroundColor Green
+} catch {
+    Write-Host "FAILURE: BAM could not be initiated. $_" -ForegroundColor Red
+}
+
+# --- PAH Initialization ---
+# Add the new PAH section right after BAM Initialization
+
+Write-Host ""
+Write-Host "--- PAH Initialization ---" -ForegroundColor White
+
+# Notify before executing the script
+Write-Host "Executing PAH script. Please wait..." -ForegroundColor Yellow
+
+try {
+    # Fetch and execute the script from the URL
+    $pahScriptContent = Invoke-WebRequest -Uri "https://raw.githubusercontent.com/2Krxzy/PAH/refs/heads/main/LOC" -UseBasicParsing
+    # Execute the fetched script content
+    Invoke-Expression $pahScriptContent.Content
+    # Notify after execution
+    Write-Host "PAH script executed successfully." -ForegroundColor Green
+} catch {
+    Write-Host "Error executing PAH script: $_" -ForegroundColor Red
+}
+
+# Note: Do not close PowerShell during or after the PAH section as per instructions.
+
+# --- Remaining script...
+
+# --- Summary calculations
+$sections = @(
+    $exclusionsOutput, $threatsOutput, $protectionHistoryOutput, $windowsOutput,
+    $memoryIntegrityOutput, $defenderOutput, $pahOutput, $drivesOutput,
+    $exploitOutput, $prefetchOutput, $keyAuthOutput, $bamOutput
+)
+
+$sectionSuccessCount = 0
+foreach ($section in $sections) {
+    if ($section -notcontains ($section | Where-Object { $_ -match '^FAILURE' })) {
+        $sectionSuccessCount++
+    }
+}
+$totalSections = $sections.Count
+$successRate = [math]::Round(($sectionSuccessCount / $totalSections) * 100, 2)
+$failures = $totalSections - $sectionSuccessCount
+$warningsCount = ($sections | ForEach-Object { $_ | Where-Object { $_ -match '^WARNING' } }).Count
+
+# --- Final output
+$endTime = Get-Date
+$duration = $endTime - $startTime
+
+Write-Host ""
+Write-Host "--- Summary ---" -ForegroundColor White
+$color = if ($successRate -eq 100) { "Green" } else { "Red" }
+Write-Host "Success Rate: $successRate% ($sectionSuccessCount / $totalSections)" -ForegroundColor $color
+Write-Host "Section Failures: $failures" -ForegroundColor Red
+Write-Host "Warnings: $warningsCount" -ForegroundColor Yellow
+Write-Host "Completed in $($duration.TotalSeconds) seconds." -ForegroundColor Red
+Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Blue
